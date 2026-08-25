@@ -394,9 +394,18 @@ static torch::Tensor fp8_fp4_paged_mqa_logits(const std::tuple<torch::Tensor, st
     const int split_kv = (arch_major == 12) ? 128 : 256;  // SM120: 2 groups × 64
     // Logits row stride must be 1024-byte aligned
     const int stride_logits_alignment = 1024 / static_cast<int>(c10::elementSize(logits_dtype));
-    const int batch_max_context_len = static_cast<int>(context_lens.max().item<int>());
-    const int effective_max_context_len =
-        batch_max_context_len < max_context_len ? batch_max_context_len : max_context_len;
+    int effective_max_context_len = max_context_len;
+    {
+        cudaStreamCaptureStatus capture_status;
+        if (cudaStreamIsCapturing(at::cuda::getCurrentCUDAStream(), &capture_status) == cudaSuccess and
+            capture_status == cudaStreamCaptureStatusActive) {
+            // CUDA graph capture in progress — skip the sync
+        } else {
+            int batch_max_context_len = static_cast<int>(context_lens.max().item<int>());
+            if (batch_max_context_len < max_context_len)
+                effective_max_context_len = batch_max_context_len;
+        }
+    }
     const auto aligned_max_context_len = align(align(effective_max_context_len, split_kv), stride_logits_alignment);
 
     auto logits = torch::empty({batch_size * next_n, aligned_max_context_len}, q_fp.options().dtype(logits_dtype));
